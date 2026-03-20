@@ -14,7 +14,6 @@ pipeline {
         WORKSPACE_DIR = "${env.WORKSPACE}"
         JMETER_VER    = "5.6.3"
         JMETER_DIR    = "${env.WORKSPACE}/apache-jmeter-${JMETER_VER}"
-        
         CASUTG_PLUGIN_URL = "https://repo1.maven.org/maven2/kg/apc/jmeter-plugins-casutg/2.10/jmeter-plugins-casutg-2.10.jar"
     }
 
@@ -47,15 +46,18 @@ pipeline {
                             echo "System JMeter detected."
                             env.JMETER_EXEC = "jmeter"
                         } else {
-                            echo "Setting up local JMeter with required plugins..."
+                            echo "Setting up local JMeter environment..."
                             if (isUnix()) {
                                 sh """
                                 if [ ! -d "${JMETER_DIR}" ]; then
+                                    echo "Downloading JMeter binaries..."
                                     wget -q https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VER}.tgz
                                     tar -xzf apache-jmeter-${JMETER_VER}.tgz
-                                    # Download the missing plugin JAR
-                                    wget -q ${CASUTG_PLUGIN_URL} -P ${JMETER_DIR}/lib/ext/
                                     rm apache-jmeter-${JMETER_VER}.tgz
+                                fi
+                                if [ ! -f "${JMETER_DIR}/lib/ext/jmeter-plugins-casutg-2.10.jar" ]; then
+                                    echo "Downloading required JMeter plugin..."
+                                    wget -q ${CASUTG_PLUGIN_URL} -P ${JMETER_DIR}/lib/ext/
                                 fi
                                 """
                                 env.JMETER_EXEC = "${JMETER_DIR}/bin/jmeter"
@@ -65,11 +67,11 @@ pipeline {
                                     echo Downloading JMeter binaries...
                                     powershell -Command "Invoke-WebRequest -Uri 'https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-%JMETER_VER%.zip' -OutFile 'jmeter.zip'"
                                     powershell -Command "Expand-Archive -Path 'jmeter.zip' -DestinationPath '%WORKSPACE_DIR%' -Force"
-                                    
-                                    echo Downloading required plugins...
-                                    powershell -Command "Invoke-WebRequest -Uri '${CASUTG_PLUGIN_URL}' -OutFile '${JMETER_DIR}\\lib\\ext\\jmeter-plugins-casutg-2.10.jar'"
-                                    
                                     del jmeter.zip
+                                )
+                                if not exist "${JMETER_DIR}\\lib\\ext\\jmeter-plugins-casutg-2.10.jar" (
+                                    echo Plugin missing. Downloading required library...
+                                    powershell -Command "Invoke-WebRequest -Uri '${CASUTG_PLUGIN_URL}' -OutFile '${JMETER_DIR}\\lib\\ext\\jmeter-plugins-casutg-2.10.jar'"
                                 )
                                 """
                                 env.JMETER_EXEC = "${JMETER_DIR}\\bin\\jmeter.bat"
@@ -77,7 +79,7 @@ pipeline {
                         }
                     } 
                     else if (params.TOOL == 'Gatling') {
-                        echo "Preparing Gatling..."
+                        echo "Preparing Gatling tool..."
                         def mvnStatus = isUnix() ? sh(script: 'mvn -v', returnStatus: true) : bat(script: 'mvn -v >nul 2>&1', returnStatus: true)
                         if (mvnStatus == 0) {
                             env.MVN_EXEC = "mvn"
@@ -87,8 +89,9 @@ pipeline {
                         }
                     }
                     else if (params.TOOL == 'Lighthouse') {
+                        echo "Checking Node.js environment..."
                         def nodeStatus = isUnix() ? sh(script: 'node -v', returnStatus: true) : bat(script: 'node -v >nul 2>&1', returnStatus: true)
-                        if (nodeStatus != 0) { error("Node.js not found.") }
+                        if (nodeStatus != 0) { error("Node.js not found on this agent.") }
                     }
                 }
             }
@@ -130,6 +133,7 @@ pipeline {
     post {
         always {
             script {
+                echo "Archiving results..."
                 if (params.TOOL == 'Gatling') {
                     gatlingArchive()
                     publishHTML(target: [
