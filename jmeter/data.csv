@@ -1,0 +1,3 @@
+company,fullName,address,postal,city,country,phone,email,comment
+EPAM Systems,Oleg Test,Street 1,79000,Lviv,UA,380501112233,oleg@test.com,Testing order
+Solo Corp,Anna Solo,Avenue 5,01001,Kyiv,UA,380674445566,anna@test.com,Urgent
