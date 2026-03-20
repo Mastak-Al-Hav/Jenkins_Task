@@ -3,24 +3,26 @@ pipeline {
 
     parameters {
         choice(name: 'TOOL', choices: ['JMeter', 'Gatling', 'Lighthouse'], description: 'Select the performance testing tool to execute')
-        string(name: 'TARGET_HOST', defaultValue: 'wp', description: 'Target host URL or IP (e.g., mysite.com)')
+        string(name: 'TARGET_HOST', defaultValue: 'wp', description: 'Target host URL or IP')
         string(name: 'TARGET_PORT', defaultValue: '80', description: 'Target port')
         string(name: 'USERS_OR_RATE', defaultValue: '9', description: 'Target Users (Gatling) or Arrival Rate (JMeter)')
-        string(name: 'RAMP_UP', defaultValue: '1', description: 'Ramp-up duration in minutes')
-        string(name: 'HOLD_FOR', defaultValue: '9', description: 'Duration to hold the load in minutes')
+        string(name: 'RAMP_UP', defaultValue: '1', description: 'Ramp-up duration (minutes)')
+        string(name: 'HOLD_FOR', defaultValue: '9', description: 'Steady state duration (minutes)')
     }
 
     environment {
         WORKSPACE_DIR = "${env.WORKSPACE}"
         JMETER_VER    = "5.6.3"
         JMETER_DIR    = "${env.WORKSPACE}/apache-jmeter-${JMETER_VER}"
+        
+        CASUTG_PLUGIN_URL = "https://repo1.maven.org/maven2/kg/apc/jmeter-plugins-casutg/2.10/jmeter-plugins-casutg-2.10.jar"
     }
 
     stages {
         stage('Prepare Workspace') {
             steps {
                 script {
-                    echo "Cleaning up previous test reports and artifacts..."
+                    echo "Cleaning up workspace..."
                     if (isUnix()) {
                         sh "rm -rf reports testResults gatling/target"
                         sh "mkdir -p reports testResults"
@@ -38,20 +40,21 @@ pipeline {
             steps {
                 script {
                     if (params.TOOL == 'JMeter') {
-                        echo "Checking for system-wide JMeter installation..."
+                        echo "Checking for JMeter..."
                         def jmeterStatus = isUnix() ? sh(script: 'jmeter -v', returnStatus: true) : bat(script: 'jmeter -v >nul 2>&1', returnStatus: true)
                         
                         if (jmeterStatus == 0) {
-                            echo "System JMeter detected. Using global installation."
+                            echo "System JMeter detected."
                             env.JMETER_EXEC = "jmeter"
                         } else {
-                            echo "System JMeter not found. Checking local workspace copy..."
+                            echo "Setting up local JMeter with required plugins..."
                             if (isUnix()) {
                                 sh """
                                 if [ ! -d "${JMETER_DIR}" ]; then
-                                    echo "Downloading JMeter binaries..."
                                     wget -q https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VER}.tgz
                                     tar -xzf apache-jmeter-${JMETER_VER}.tgz
+                                    # Download the missing plugin JAR
+                                    wget -q ${CASUTG_PLUGIN_URL} -P ${JMETER_DIR}/lib/ext/
                                     rm apache-jmeter-${JMETER_VER}.tgz
                                 fi
                                 """
@@ -59,9 +62,13 @@ pipeline {
                             } else {
                                 bat """
                                 if not exist "${JMETER_DIR}" (
-                                    echo JMeter not found. Downloading via PowerShell...
+                                    echo Downloading JMeter binaries...
                                     powershell -Command "Invoke-WebRequest -Uri 'https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-%JMETER_VER%.zip' -OutFile 'jmeter.zip'"
                                     powershell -Command "Expand-Archive -Path 'jmeter.zip' -DestinationPath '%WORKSPACE_DIR%' -Force"
+                                    
+                                    echo Downloading required plugins...
+                                    powershell -Command "Invoke-WebRequest -Uri '${CASUTG_PLUGIN_URL}' -OutFile '${JMETER_DIR}\\lib\\ext\\jmeter-plugins-casutg-2.10.jar'"
+                                    
                                     del jmeter.zip
                                 )
                                 """
@@ -70,24 +77,18 @@ pipeline {
                         }
                     } 
                     else if (params.TOOL == 'Gatling') {
-                        echo "Checking for system-wide Maven installation..."
+                        echo "Preparing Gatling..."
                         def mvnStatus = isUnix() ? sh(script: 'mvn -v', returnStatus: true) : bat(script: 'mvn -v >nul 2>&1', returnStatus: true)
-                        
                         if (mvnStatus == 0) {
-                            echo "System Maven detected. Using global installation."
                             env.MVN_EXEC = "mvn"
                         } else {
-                            echo "System Maven not found. Falling back to Maven Wrapper (mvnw)."
                             if (isUnix()) { sh "chmod +x gatling/mvnw" }
                             env.MVN_EXEC = isUnix() ? "./mvnw" : "mvnw.cmd"
                         }
                     }
                     else if (params.TOOL == 'Lighthouse') {
-                        echo "Validating Node.js and NPM environment..."
                         def nodeStatus = isUnix() ? sh(script: 'node -v', returnStatus: true) : bat(script: 'node -v >nul 2>&1', returnStatus: true)
-                        if (nodeStatus != 0) {
-                            error("Node.js is required but not installed on this Jenkins agent.")
-                        }
+                        if (nodeStatus != 0) { error("Node.js not found.") }
                     }
                 }
             }
@@ -128,7 +129,6 @@ pipeline {
 
     post {
         always {
-            echo "Archiving test results and publishing reports..."
             script {
                 if (params.TOOL == 'Gatling') {
                     gatlingArchive()
@@ -140,7 +140,6 @@ pipeline {
                         reportFiles: '**/index.html',
                         reportName: 'Gatling HTML Report'
                     ])
-                    archiveArtifacts artifacts: 'gatling/target/gatling/**/*', allowEmptyArchive: true
                 } 
                 else if (params.TOOL == 'JMeter') {
                     archiveArtifacts artifacts: 'reports/JMeter.jtl, reports/HtmlReport/**/*', allowEmptyArchive: true
