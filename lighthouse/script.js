@@ -1,4 +1,6 @@
 const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const puppeteer = require('puppeteer');
 const lighthouse = require('lighthouse/lighthouse-core/fraggle-rock/api.js');
 
@@ -36,9 +38,23 @@ const waitTillHTMLRendered = async (page, timeout = 30000) => {
 };
 
 async function captureReport() {
-    console.log("Launching browser...");
+   
+    const baseURL = process.argv[2] || "http://wp:80/";
+    console.log(`Target URL: ${baseURL}`);
+
+    let chromePath;
+    if (os.platform() === 'win32') {
+        
+        chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+    } else {
+       
+        chromePath = '/usr/bin/chromium-browser';
+    }
+
+    console.log(`Launching browser at: ${chromePath}`);
+
     const browser = await puppeteer.launch({
-        executablePath: '/usr/bin/chromium-browser',
+        executablePath: chromePath,
         headless: 'new',
         args: [
             '--no-sandbox',
@@ -50,12 +66,10 @@ async function captureReport() {
     });
 
     const page = await browser.newPage();
-    const baseURL = "http://wp:80/";
-
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setDefaultTimeout(30000);
 
-    console.log("Starting Lighthouse flow...");
+    console.log("Starting Lighthouse User Flow...");
     const flow = await lighthouse.startFlow(page, {
         name: 'Performance Testing User Flow',
         configContext: {
@@ -74,7 +88,6 @@ async function captureReport() {
         }
     });
 
-    // SELECTORS
     const tablesLink = 'a[href*="tables"], li.page-item-13 a, .right-menu a[href*="tables"]';
     const productCardSelector = '.product-list .al_archive';
     const addToCartBtn = 'form.add-to-shopping-cart button[type="submit"], button.button.green-box.ic-design';
@@ -91,6 +104,7 @@ async function captureReport() {
         email: 'input[name="cart_email"]',
         submit: 'input[name="cart_submit"]'
     };
+
 
     // 1. Open Home Page
     await flow.navigate(baseURL, { stepName: 'Open Home Page' });
@@ -151,13 +165,13 @@ async function captureReport() {
     await flow.endTimespan();
     console.log("Order submitted");
 
-    // GENERATE REPORT
     const report = await flow.generateReport();
-    const reportPath = __dirname + '/testResults/lighthouse-report.html';
     
-    // Переконаємося, що папка існує (хоча Jenkins її створює)
-    if (!fs.existsSync(__dirname + '/testResults')) {
-        fs.mkdirSync(__dirname + '/testResults');
+    const resultsDir = path.join(__dirname, '..', 'testResults');
+    const reportPath = path.join(resultsDir, 'lighthouse-report.html');
+    
+    if (!fs.existsSync(resultsDir)) {
+        fs.mkdirSync(resultsDir, { recursive: true });
     }
 
     fs.writeFileSync(reportPath, report);
