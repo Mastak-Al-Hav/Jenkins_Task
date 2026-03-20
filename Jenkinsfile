@@ -2,23 +2,26 @@ pipeline {
     agent any
 
     parameters {
-        choice(name: 'TOOL', choices: ['JMeter', 'Gatling', 'Lighthouse'], description: 'Select the performance testing tool to run')
-        string(name: 'TARGET_HOST', defaultValue: 'wp', description: 'Target host or IP (without http://)')
-        string(name: 'TARGET_PORT', defaultValue: '80', description: 'Target port')
-        string(name: 'USERS_OR_RATE', defaultValue: '9', description: 'Number of users (Gatling) or Target Rate (JMeter)')
-        string(name: 'RAMP_UP', defaultValue: '1', description: 'Ramp-up duration (in minutes)')
-        string(name: 'HOLD_FOR', defaultValue: '9', description: 'Steady state hold duration (in minutes)')
+        choice(name: 'TOOL', choices: ['JMeter', 'Gatling', 'Lighthouse'], description: 'Оберіть інструмент для тестування')
+        string(name: 'TARGET_HOST', defaultValue: 'wp', description: 'Цільовий хост (без http://)')
+        string(name: 'TARGET_PORT', defaultValue: '80', description: 'Цільовий порт')
+        string(name: 'USERS_OR_RATE', defaultValue: '9', description: 'Кількість юзерів / Target Rate')
+        string(name: 'RAMP_UP', defaultValue: '1', description: 'Час розгону (Ramp-up у хвилинах)')
+        string(name: 'HOLD_FOR', defaultValue: '9', description: 'Тривалість тесту (Hold у хвилинах)')
     }
 
     environment {
         WORKSPACE_DIR = "${env.WORKSPACE}"
+       
+        JMETER_VER = "5.6.3"
+        JMETER_DIR = "${env.WORKSPACE}/apache-jmeter-${JMETER_VER}"
     }
 
     stages {
         stage('Prepare Workspace') {
             steps {
                 script {
-                    echo "Cleaning up old reports and target directories..."
+                    echo "Очищення старих звітів..."
                     if (isUnix()) {
                         sh "rm -rf reports testResults gatling/target"
                         sh "mkdir -p reports testResults"
@@ -32,30 +35,75 @@ pipeline {
             }
         }
 
+        stage('Auto-Install JMeter') {
+            
+            when { expression { params.TOOL == 'JMeter' } }
+            steps {
+                script {
+                    echo "Перевірка наявності JMeter..."
+                    if (isUnix()) {
+                        sh """
+                        if [ ! -d "${JMETER_DIR}" ]; then
+                            echo "JMeter не знайдено. Завантажую..."
+                            wget -q https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VER}.tgz
+                            tar -xzf apache-jmeter-${JMETER_VER}.tgz
+                            rm apache-jmeter-${JMETER_VER}.tgz
+                        else
+                            echo "JMeter вже встановлено у workspace."
+                        fi
+                        """
+                    } else {
+                        bat """
+                        if not exist "${JMETER_DIR}" (
+                            echo JMeter не знайдено. Завантажую через PowerShell...
+                            powershell -Command "Invoke-WebRequest -Uri 'https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-%JMETER_VER%.zip' -OutFile 'jmeter.zip'"
+                            powershell -Command "Expand-Archive -Path 'jmeter.zip' -DestinationPath '%WORKSPACE_DIR%' -Force"
+                            del jmeter.zip
+                        ) else (
+                            echo JMeter вже встановлено у workspace.
+                        )
+                        """
+                    }
+                }
+            }
+        }
+
         stage('Run Selected Test') {
             steps {
                 script {
                     if (params.TOOL == 'Gatling') {
-                        echo "Running Gatling performance test..."
+                        echo "Запуск Gatling через Maven Wrapper..."
                         dir("gatling") { 
-                            def mvnCmd = "mvn clean gatling:test -DbaseUrl=http://${params.TARGET_HOST}:${params.TARGET_PORT}/ -Dusers=${params.USERS_OR_RATE} -Dramp=${params.RAMP_UP} -Dhold=${params.HOLD_FOR}"
-                            if (isUnix()) { sh mvnCmd } else { bat mvnCmd }
+                            
+                            if (isUnix()) {
+                                sh "chmod +x mvnw" 
+                                sh "./mvnw clean gatling:test -DbaseUrl=http://${params.TARGET_HOST}:${params.TARGET_PORT}/ -Dusers=${params.USERS_OR_RATE} -Dramp=${params.RAMP_UP} -Dhold=${params.HOLD_FOR}"
+                            } else {
+                                bat "mvnw.cmd clean gatling:test -DbaseUrl=http://${params.TARGET_HOST}:${params.TARGET_PORT}/ -Dusers=${params.USERS_OR_RATE} -Dramp=${params.RAMP_UP} -Dhold=${params.HOLD_FOR}"
+                            }
                         }
                     } 
                     else if (params.TOOL == 'JMeter') {
-                        echo "Running JMeter performance test..."
+                        echo "Запуск JMeter..."
                         dir("jmeter") {
-                            def jmeterCmd = "jmeter -n -t Educart.jmx -Jhost=${params.TARGET_HOST} -Jport=${params.TARGET_PORT} -JtargetRate=${params.USERS_OR_RATE} -JrampUp=${params.RAMP_UP} -JholdFor=${params.HOLD_FOR} -l ../reports/JMeter.jtl -e -o ../reports/HtmlReport"
+                            def jmeterExec = isUnix() ? "${JMETER_DIR}/bin/jmeter" : "${JMETER_DIR}\\bin\\jmeter.bat"
+                            def jmeterCmd = "\"${jmeterExec}\" -n -t Educart.jmx -Jhost=${params.TARGET_HOST} -Jport=${params.TARGET_PORT} -JtargetRate=${params.USERS_OR_RATE} -JrampUp=${params.RAMP_UP} -JholdFor=${params.HOLD_FOR} -l ../reports/JMeter.jtl -e -o ../reports/HtmlReport"
+                            
                             if (isUnix()) { sh jmeterCmd } else { bat jmeterCmd }
                         }
                     } 
                     else if (params.TOOL == 'Lighthouse') {
-                        echo "Running Lighthouse test via Docker..."
+                        echo "Запуск Lighthouse через чистий Node.js..."
                         dir("lighthouse") {
                             def targetUrl = "http://${params.TARGET_HOST}:${params.TARGET_PORT}"
-                            def dockerCmd = "docker run --rm --network pte-network --add-host=localhost:host-gateway -v \"${WORKSPACE_DIR}/lighthouse:/usr/src/app\" -w \"/usr/src/app\" ibombit/lighthouse-puppeteer-chrome:latest node script.js ${targetUrl}"
-                            
-                            if (isUnix()) { sh dockerCmd } else { bat dockerCmd }
+                           
+                            if (isUnix()) { 
+                                sh "npm install puppeteer lighthouse"
+                                sh "node script.js ${targetUrl}" 
+                            } else { 
+                                bat "npm install puppeteer lighthouse"
+                                bat "node script.js ${targetUrl}" 
+                            }
                         }
                     }
                 }
@@ -65,7 +113,7 @@ pipeline {
 
     post {
         always {
-            echo "Publishing artifacts and HTML reports..."
+            echo "Збереження звітів..."
             script {
                 if (params.TOOL == 'Gatling') {
                     gatlingArchive()
